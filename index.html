@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Universal Turing Machine (UTM) Simulator - Clean Interactive Educational Tool">
+  <title>Universal Turing Machine (UTM) Simulator</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body class="theme-dark">
+
+  <div class="app-shell">
+    
+    <!-- ==================== HEADER ==================== -->
+    <header class="navbar">
+      <div class="nav-brand">
+        <div class="brand-icon">UTM</div>
+        <div>
+          <h1 class="brand-title">Universal Turing Machine Simulator</h1>
+          <p class="brand-subtitle">Theory of Computation &middot; <code>U(&lang;M, w&rang;) = M(w)</code></p>
+        </div>
+      </div>
+
+      <div class="nav-actions">
+        <!-- Machine Preset Selector -->
+        <div class="select-group">
+          <label for="presetSelect" class="control-label">Example Machine:</label>
+          <select id="presetSelect" class="form-select font-medium">
+            <option value="contains1">1. Accept strings containing '1'</option>
+            <option value="endsIn1">2. Binary strings ending in '1'</option>
+            <option value="anbn">3. Language 0ⁿ1ⁿ (Equal 0s and 1s)</option>
+            <option value="unaryInc">4. Unary Incrementer (w &rarr; w+1)</option>
+            <option value="palindrome">5. Binary Palindrome Checker</option>
+            <option value="custom">✏️ Enter Custom Machine Manually...</option>
+          </select>
+        </div>
+
+        <!-- Theme Toggle -->
+        <button id="themeToggleBtn" class="btn-theme" title="Toggle Theme" aria-label="Toggle Theme">
+          <span class="icon-sun">☀️ Light</span>
+          <span class="icon-moon">🌙 Dark</span>
+        </button>
+      </div>
+    </header>
+
+
+    <!-- ==================== HERO TAPE & SIMULATION SECTION ==================== -->
+    <main class="main-content">
+      
+      <!-- TOP STATUS & INPUT BAR -->
+      <section class="control-strip card">
+        <div class="input-col">
+          <label for="inputString" class="control-label">
+            Manual Input String <code>w</code>:
+          </label>
+          <div class="input-group">
+            <input type="text" id="inputString" class="form-input font-mono" value="00100" placeholder="Type custom input (e.g. 0011)...">
+            <button id="clearInputBtn" class="btn-clear" title="Clear input">&times;</button>
+            <button id="applyInputBtn" class="btn btn-sm btn-primary btn-apply" title="Load manual input onto tape">📥 Set on Tape</button>
+          </div>
+          <div id="inputErrorMsg" class="error-text"></div>
+        </div>
+
+        <div class="quick-samples-col">
+          <span class="control-label">Quick Samples:</span>
+          <div id="quickSampleContainer" class="sample-chips">
+            <!-- Populated dynamically -->
+          </div>
+        </div>
+
+        <div class="status-col">
+          <span class="control-label">Machine Status:</span>
+          <div id="dashStatus" class="status-pill status-ready">READY</div>
+        </div>
+      </section>
+
+      <!-- HERO TAPE CARD -->
+      <section class="tape-hero card">
+        <div class="tape-header">
+          <div class="tape-header-left">
+            <span class="section-tag">Interactive Tape</span>
+            <span class="tape-info font-mono">
+              State: <strong id="heroCurrentState" class="state-highlight">q0</strong> &middot; 
+              Head Pos: <strong id="heroHeadPos">0</strong> &middot; 
+              Step: <strong id="heroCurrentStep">0</strong>
+            </span>
+          </div>
+
+          <div class="tape-header-right">
+            <button id="manualTapeModalBtn" class="btn-sm btn-outline" title="Open Manual Tape Setup">✏️ Edit Tape Directly</button>
+            <button id="centerHeadBtn" class="btn-sm btn-outline">🎯 Recenter Tape</button>
+          </div>
+        </div>
+
+        <div class="tape-hint-banner">
+          <span>💡 <strong>Manual Tape Editing:</strong> Click any cell on the tape below to change its symbol or jump the head there!</span>
+        </div>
+
+        <!-- VISUAL TAPE DISPLAY -->
+        <div class="tape-container">
+          <!-- Top Arrow pointing down at active cell -->
+          <div class="tape-head-marker">
+            <div class="head-arrow">▼</div>
+            <div class="head-state-tag font-mono" id="headStateTag">HEAD</div>
+          </div>
+
+          <!-- Tape Track with Cells -->
+          <div class="tape-track" id="tapeTrack">
+            <!-- Injected by script.js -->
+          </div>
+        </div>
+
+        <!-- ACTIVE TRANSITION CALLOUT BANNER -->
+        <div class="transition-banner">
+          <div class="trans-rule-box">
+            <span class="trans-label">Active Rule:</span>
+            <span class="trans-formula font-mono" id="paramRuleDisplay">&delta;(q0, 0) &rarr; (q0, 0, R)</span>
+          </div>
+          <div class="trans-details font-mono">
+            <span>Read: <strong id="paramReadSym">'0'</strong></span> &bull;
+            <span>Write: <strong id="paramWriteSym">'0'</strong></span> &bull;
+            <span>Move: <strong id="paramMoveDir">Right</strong></span> &bull;
+            <span>Next State: <strong id="paramNextState" class="state-highlight">q0</strong></span>
+          </div>
+        </div>
+
+        <!-- HUMAN READABLE EXPLANATION -->
+        <div class="explanation-box">
+          <div class="explanation-title">
+            <span>💡 UTM Step Explanation:</span>
+            <span id="explStepBadge" class="badge-step font-mono">Step 0</span>
+          </div>
+          <p id="stepExplanationText" class="explanation-text">
+            Universal Turing Machine initialized. Press <strong>"Start"</strong> to run continuously or <strong>"Step"</strong> to observe transition execution one by one.
+          </p>
+        </div>
+      </section>
+
+
+      <!-- CONTROLS & SPEED BAR -->
+      <section class="controls-bar card">
+        <div class="playback-buttons">
+          <button id="startBtn" class="btn btn-primary">▶ Start</button>
+          <button id="stepBtn" class="btn btn-secondary">⏭ Step</button>
+          <button id="pauseBtn" class="btn btn-secondary" disabled>⏸ Pause</button>
+          <button id="resumeBtn" class="btn btn-secondary" disabled>▶ Resume</button>
+          <button id="resetBtn" class="btn btn-outline">🔄 Reset</button>
+          <button id="stopBtn" class="btn btn-danger" disabled>⏹ Stop</button>
+        </div>
+
+        <div class="speed-control">
+          <span class="control-label">Speed: <strong id="speedValueLabel">Normal (400ms)</strong></span>
+          <div class="speed-slider-group">
+            <input type="range" id="speedRange" min="30" max="1500" step="30" value="400" class="slider">
+            <div class="speed-buttons">
+              <button class="btn-xs speed-preset-btn" data-speed="1200">Slow</button>
+              <button class="btn-xs speed-preset-btn active" data-speed="400">Normal</button>
+              <button class="btn-xs speed-preset-btn" data-speed="100">Fast</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="max-steps-group">
+          <label for="maxStepsInput" class="control-label" title="Halting Problem Safeguard">Max Steps:</label>
+          <input type="number" id="maxStepsInput" class="form-input-sm font-mono" value="1000" min="10" max="100000" step="100">
+        </div>
+      </section>
+
+
+      <!-- ==================== TABBED WORKSPACE (CLEAN & ORGANIZED) ==================== -->
+      <section class="details-section card">
+        
+        <!-- Tab Navigation Buttons -->
+        <nav class="nav-tabs" role="tablist">
+          <button class="tab-btn active" data-tab="tab-transitions" role="tab">
+            📋 Transition Table (&delta;)
+          </button>
+          <button class="tab-btn" data-tab="tab-encoding" role="tab">
+            ⚡ UTM Encoding &lang;M, w&rang;
+          </button>
+          <button class="tab-btn" data-tab="tab-history" role="tab">
+            📜 Execution Trace (<span id="historyCountBadge">0</span>)
+          </button>
+          <button class="tab-btn" data-tab="tab-editor" role="tab">
+            ✏️ Machine Definition (7-Tuple)
+          </button>
+          <button class="tab-btn" data-tab="tab-theory" role="tab">
+            🎓 Theory & Concepts
+          </button>
+        </nav>
+
+        <!-- TAB 1: TRANSITION TABLE -->
+        <div class="tab-pane active" id="tab-transitions" role="tabpanel">
+          <div class="pane-header">
+            <div>
+              <h3 class="pane-title">Transition Function Rules</h3>
+              <p class="pane-sub">Active transition is highlighted in real-time as the UTM simulates each step.</p>
+            </div>
+            <button type="button" id="addTransitionBtn" class="btn btn-sm btn-primary">+ Add Rule</button>
+          </div>
+
+          <div class="table-wrapper">
+            <table class="data-table" id="transitionTable">
+              <thead>
+                <tr>
+                  <th>Current State (q)</th>
+                  <th>Read (a)</th>
+                  <th>Write (b)</th>
+                  <th>Move (D)</th>
+                  <th>Next State (q')</th>
+                  <th style="width: 50px;">Action</th>
+                </tr>
+              </thead>
+              <tbody id="transitionTableBody">
+                <!-- Dynamically populated -->
+              </tbody>
+            </table>
+          </div>
+
+          <div id="validationAlert" class="alert alert-hidden"></div>
+        </div>
+
+        <!-- TAB 2: UTM ENCODING -->
+        <div class="tab-pane" id="tab-encoding" role="tabpanel">
+          <div class="pane-header">
+            <div>
+              <h3 class="pane-title">Universal Machine Representation &lang;M, w&rang;</h3>
+              <p class="pane-sub">Demonstrates how the Turing Machine and its input are encoded into a standard format readable by the UTM.</p>
+            </div>
+            <button id="encodeBtn" class="btn btn-sm btn-primary">⚡ Refresh Encoding</button>
+          </div>
+
+          <div class="encoding-grid">
+            <div class="encoding-box">
+              <span class="box-title">Complete UTM Input Pair &lang;M, w&rang;:</span>
+              <pre id="encodedCompleteDisplay" class="code-box font-mono">&mdash;</pre>
+            </div>
+
+            <div class="encoding-sub-grid">
+              <div class="encoding-box">
+                <span class="box-title">Encoded Machine &lang;M&rang;:</span>
+                <pre id="encodedMachineDisplay" class="code-box-sm font-mono">&mdash;</pre>
+              </div>
+              <div class="encoding-box">
+                <span class="box-title">Encoded Input String &lang;w&rang;:</span>
+                <pre id="encodedInputDisplay" class="code-box-sm font-mono">&mdash;</pre>
+              </div>
+            </div>
+
+            <div class="encoding-box">
+              <span class="box-title">Theoretical Hopcroft-Ullman Unary-Binary Code (0/1 bitstring):</span>
+              <pre id="encodedBinaryDisplay" class="code-box-binary font-mono">&mdash;</pre>
+              <p class="text-muted mt-2">
+                Transitions encoded as <code>0 1ⁱ 0 1ʲ 0 1ᵏ 0 1ˡ 0 1ᵐ 0</code>, separated by <code>00</code>. Delimited from input with <code>000</code>.
+              </p>
+            </div>
+
+            <div class="dict-section">
+              <span class="box-title">Encoding Dictionary (Unary Symbol Map):</span>
+              <div class="dict-row">
+                <div class="dict-card">
+                  <h4>States &rarr; Unary</h4>
+                  <div id="dictStatesList" class="dict-content font-mono"></div>
+                </div>
+                <div class="dict-card">
+                  <h4>Symbols &rarr; Unary</h4>
+                  <div id="dictSymbolsList" class="dict-content font-mono"></div>
+                </div>
+                <div class="dict-card">
+                  <h4>Head Directions</h4>
+                  <div class="dict-content font-mono">
+                    Left (L) &rarr; 1<br>
+                    Right (R) &rarr; 11<br>
+                    Stay (S) &rarr; 111
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB 3: EXECUTION HISTORY -->
+        <div class="tab-pane" id="tab-history" role="tabpanel">
+          <div class="pane-header">
+            <div>
+              <h3 class="pane-title">Execution History Trace</h3>
+              <p class="pane-sub">Chronological log of every transition executed by the Universal Turing Machine.</p>
+            </div>
+            <div class="btn-group">
+              <button id="exportHistoryBtn" class="btn btn-sm btn-outline">Export CSV</button>
+              <button id="clearHistoryBtn" class="btn btn-sm btn-outline">Clear History</button>
+            </div>
+          </div>
+
+          <div class="table-wrapper">
+            <table class="data-table" id="historyTable">
+              <thead>
+                <tr>
+                  <th>Step</th>
+                  <th>Current State</th>
+                  <th>Read</th>
+                  <th>Write</th>
+                  <th>Move</th>
+                  <th>Next State</th>
+                  <th>Head Pos</th>
+                  <th>Tape Snapshot</th>
+                </tr>
+              </thead>
+              <tbody id="historyTableBody">
+                <tr class="empty-row">
+                  <td colspan="8">No transitions executed yet. Run the simulation to view the trace.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- TAB 4: FORMAL 7-TUPLE DEFINITION EDITOR -->
+        <div class="tab-pane" id="tab-editor" role="tabpanel">
+          <div class="pane-header">
+            <div>
+              <h3 class="pane-title">Formal Machine Definition: M = (Q, &Sigma;, &Gamma;, &delta;, q₀, q_acc, q_rej)</h3>
+              <p class="pane-sub">Configure machine states, alphabets, and halting conditions. Export or import machines via JSON.</p>
+            </div>
+            <div class="btn-group">
+              <button id="importBtn" class="btn btn-sm btn-outline">Import JSON</button>
+              <button id="exportBtn" class="btn btn-sm btn-outline">Export JSON</button>
+              <input type="file" id="fileInput" accept=".json" style="display:none;">
+            </div>
+          </div>
+
+          <form id="tmForm" onsubmit="event.preventDefault();" class="editor-grid">
+            <div class="form-field full-width">
+              <label for="machineNameInput" class="field-label">Machine Name / Description</label>
+              <input type="text" id="machineNameInput" class="form-input" value="Accept strings containing '1'">
+            </div>
+
+            <div class="form-field">
+              <label for="statesInput" class="field-label">States Q (comma-separated)</label>
+              <input type="text" id="statesInput" class="form-input font-mono" value="q0, q1, qaccept, qreject">
+            </div>
+
+            <div class="form-field">
+              <label for="inputAlphabetInput" class="field-label">Input Alphabet &Sigma;</label>
+              <input type="text" id="inputAlphabetInput" class="form-input font-mono" value="0, 1">
+            </div>
+
+            <div class="form-field">
+              <label for="tapeAlphabetInput" class="field-label">Tape Alphabet &Gamma; (must include blank)</label>
+              <input type="text" id="tapeAlphabetInput" class="form-input font-mono" value="0, 1, B">
+            </div>
+
+            <div class="form-field">
+              <label for="blankSymbolInput" class="field-label">Blank Symbol &squ;</label>
+              <input type="text" id="blankSymbolInput" class="form-input font-mono" value="B" maxlength="2">
+            </div>
+
+            <div class="form-field">
+              <label for="startStateInput" class="field-label">Start State q₀</label>
+              <input type="text" id="startStateInput" class="form-input font-mono" value="q0">
+            </div>
+
+            <div class="form-field">
+              <label for="acceptStateInput" class="field-label">Accept State q_acc</label>
+              <input type="text" id="acceptStateInput" class="form-input font-mono" value="qaccept">
+            </div>
+
+            <div class="form-field">
+              <label for="rejectStateInput" class="field-label">Reject State q_rej</label>
+              <input type="text" id="rejectStateInput" class="form-input font-mono" value="qreject">
+            </div>
+
+            <div class="form-field full-width mt-2">
+              <button type="button" id="validateTmBtn" class="btn btn-secondary">
+                ✓ Validate 7-Tuple Definition
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <!-- TAB 5: THEORY & CONCEPTS -->
+        <div class="tab-pane" id="tab-theory" role="tabpanel">
+          <div class="theory-article">
+            <h3>What is a Universal Turing Machine?</h3>
+            <p>
+              In 1936, Alan Turing established that a single programmable machine&mdash;the <strong>Universal Turing Machine ($U$)</strong>&mdash;can simulate any other Turing Machine ($M$) given an encoded description $\langle M \rangle$ and input string $w$:
+            </p>
+            <div class="math-callout font-mono">
+              U(&lang;M, w&rang;) = M(w)
+            </div>
+
+            <h4>Significance in Modern Computing</h4>
+            <p>
+              Before Turing, calculating machines were hardwired for single tasks. The UTM proved that programs and data can share the same medium, laying the foundation for modern stored-program computers (the Von Neumann architecture).
+            </p>
+
+            <h4>The Halting Problem & Step Limits</h4>
+            <p>
+              Turing proved that no general algorithm can determine whether an arbitrary machine $M$ halts on input $w$. Therefore, our simulator enforces a <strong>Max Step Limit</strong> (default 1000) to protect against infinite loops. Reaching this bound does not prove non-halting, but ensures browser responsiveness.
+            </p>
+          </div>
+        </div>
+
+      </section>
+
+    </main>
+
+    <!-- Hidden compatibility elements to ensure clean script binding -->
+    <div style="display:none;">
+      <span id="dashMachineName"></span>
+      <span id="dashStatesCount"></span>
+      <span id="dashTransCount"></span>
+      <span id="dashInputLen"></span>
+      <span id="dashCurrentStep"></span>
+      <span id="dashCurrentState"></span>
+      <span id="dashHeadPos"></span>
+      <span id="inputValidationBadge"></span>
+      <span id="activeTransBadge"></span>
+      <span id="paramCurrState"></span>
+      <span id="headStateBadge"></span>
+      <div id="archDiagram"></div>
+      <div id="archNodeInput"></div>
+      <div id="archNodeUTM"></div>
+      <div id="archNodeTape"></div>
+      <div id="archTapePreview"></div>
+      <div id="archHeadPos"></div>
+    </div>
+
+    <!-- Notification Toasts -->
+    <div id="toastContainer" class="toast-shelf" aria-live="polite"></div>
+
+    <!-- ==================== CELL DIRECT EDIT MODAL ==================== -->
+    <div class="modal-backdrop modal-hidden" id="cellEditModal" role="dialog" aria-modal="true" aria-labelledby="cellEditModalTitle">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3 id="cellEditModalTitle">Edit Tape Cell #<span id="editCellIndexSpan">0</span></h3>
+          <button class="modal-close" id="closeCellEditBtn">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p class="modal-desc">Select a symbol from the tape alphabet (&Gamma;) or type a custom symbol:</p>
+          <div class="symbol-palette" id="cellSymbolPalette">
+            <!-- Quick buttons injected here -->
+          </div>
+          <div class="form-field mt-3">
+            <label for="customCellSymbolInput" class="field-label">Custom Symbol:</label>
+            <input type="text" id="customCellSymbolInput" class="form-input font-mono" maxlength="2" placeholder="e.g. 0, 1, B, X">
+          </div>
+          <div class="modal-actions-row mt-3">
+            <button type="button" id="setHeadToCellBtn" class="btn btn-secondary btn-sm">🎯 Place Head Here</button>
+            <button type="button" id="saveCellSymbolBtn" class="btn btn-primary btn-sm">Save Symbol</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== MANUAL FULL TAPE EDITOR MODAL ==================== -->
+    <div class="modal-backdrop modal-hidden" id="manualTapeModal" role="dialog" aria-modal="true" aria-labelledby="manualTapeModalTitle">
+      <div class="modal-card modal-card-lg">
+        <div class="modal-header">
+          <h3 id="manualTapeModalTitle">✏️ Manual Tape Setup</h3>
+          <button class="modal-close" id="closeManualTapeBtn">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p class="modal-desc">Configure the entire tape contents, starting cell index, and head position manually:</p>
+          
+          <div class="form-field">
+            <label for="manualTapeSequenceInput" class="field-label">
+              Tape Sequence (space-separated or string, e.g. <code>0 0 1 1</code> or <code>B B 1 0 1 B</code>):
+            </label>
+            <input type="text" id="manualTapeSequenceInput" class="form-input font-mono" placeholder="e.g. 0 0 1 1 or B B 0 1 B">
+          </div>
+
+          <div class="editor-grid mt-2">
+            <div class="form-field">
+              <label for="manualTapeStartIndexInput" class="field-label">Starting Cell Index:</label>
+              <input type="number" id="manualTapeStartIndexInput" class="form-input font-mono" value="0">
+            </div>
+
+            <div class="form-field">
+              <label for="manualTapeHeadPosInput" class="field-label">Initial Head Position:</label>
+              <input type="number" id="manualTapeHeadPosInput" class="form-input font-mono" value="0">
+            </div>
+          </div>
+
+          <div class="modal-footer-actions mt-3">
+            <button type="button" id="clearAllTapeBtn" class="btn btn-outline btn-sm">Clear Tape to Blank</button>
+            <div class="btn-group">
+              <button type="button" id="cancelManualTapeBtn" class="btn btn-secondary btn-sm">Cancel</button>
+              <button type="button" id="applyManualTapeBtn" class="btn btn-primary btn-sm">Apply to Tape</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
