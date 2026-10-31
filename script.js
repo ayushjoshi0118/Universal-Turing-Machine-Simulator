@@ -21,7 +21,16 @@
  * 1. PRESET MACHINES DATABASE
  * Predefined educational machines covering essential Theory of Computation problems
  * ============================================================================ */
-const PRESET_MACHINES = {
+var _activePresets = null;
+if (typeof window !== 'undefined' && window.PRESET_MACHINES) {
+  _activePresets = window.PRESET_MACHINES;
+} else if (typeof require !== 'undefined') {
+  try {
+    _activePresets = require('./presets.js').PRESET_MACHINES;
+  } catch (e) {}
+}
+
+const FALLBACK_PRESETS = {
   // Example 1: Accept strings containing '1'
   contains1: {
     name: "Accept strings containing '1'",
@@ -169,6 +178,11 @@ const PRESET_MACHINES = {
     ]
   }
 };
+
+const ACTIVE_PRESETS = _activePresets || FALLBACK_PRESETS;
+if (typeof window !== 'undefined') {
+  window.ACTIVE_PRESETS = ACTIVE_PRESETS;
+}
 
 
 /* ============================================================================
@@ -540,6 +554,7 @@ class UTMSimulator {
     this.maxSteps = 1000;
     this.status = "READY"; // READY, RUNNING, PAUSED, ACCEPTED, REJECTED, HALTED, STEP_LIMIT, ERROR
     this.history = [];
+    this.snapshots = []; // Reversible time-travel execution snapshot stack
     this.lastTransition = null;
     this.lastExplanation = "";
   }
@@ -556,6 +571,7 @@ class UTMSimulator {
     this.headPosition = 0;
     this.stepCount = 0;
     this.history = [];
+    this.snapshots = []; // Clear snapshot history on new initialization
     this.lastTransition = null;
 
     // Check immediate start halt condition
@@ -601,6 +617,20 @@ class UTMSimulator {
     const stateBefore = this.currentState;
     const headBefore = this.headPosition;
     const readSym = this.tape.read(this.headPosition);
+
+    // Save snapshot BEFORE mutating tape or state for reversible time-travel stepping
+    this.snapshots.push({
+      currentState: this.currentState,
+      headPosition: this.headPosition,
+      stepCount: this.stepCount,
+      tapeCells: new Map(this.tape.cells),
+      minWrittenIndex: this.tape.minWrittenIndex,
+      maxWrittenIndex: this.tape.maxWrittenIndex,
+      status: this.status,
+      lastTransition: this.lastTransition,
+      lastExplanation: this.lastExplanation,
+      historyLength: this.history.length
+    });
 
     // Scan transition rule delta(stateBefore, readSym) from encoded machine
     const transition = this.machine.getTransition(stateBefore, readSym);
@@ -700,14 +730,77 @@ class UTMSimulator {
   }
 
   /**
+   * Step backward exactly ONE transition using recorded snapshots (Time Travel)
+   */
+  stepBackward() {
+    if (!this.snapshots || this.snapshots.length === 0) {
+      return null;
+    }
+
+    const prev = this.snapshots.pop();
+    this.currentState = prev.currentState;
+    this.headPosition = prev.headPosition;
+    this.stepCount = prev.stepCount;
+    this.tape.cells = prev.tapeCells;
+    this.tape.minWrittenIndex = prev.minWrittenIndex;
+    this.tape.maxWrittenIndex = prev.maxWrittenIndex;
+    this.status = prev.status;
+    this.lastTransition = prev.lastTransition;
+    this.lastExplanation = prev.lastExplanation;
+
+    if (this.history.length > prev.historyLength) {
+      this.history.length = prev.historyLength;
+    }
+
+    return {
+      success: true,
+      snapshot: this.getStateSnapshot()
+    };
+  }
+
+  /**
+   * Lookahead for next transition that will be executed
+   */
+  getNextTransitionPreview() {
+    if (!this.machine || ["ACCEPTED", "REJECTED", "HALTED", "STEP_LIMIT", "ERROR"].includes(this.status)) {
+      return null;
+    }
+    const currentSym = this.tape.read(this.headPosition);
+    return this.machine.getTransition(this.currentState, currentSym);
+  }
+
+  /**
+   * Extract final non-blank output string currently written on tape (Transducer / Result)
+   */
+  getTapeOutputString() {
+    if (!this.tape || !this.machine) return "";
+    const blank = this.machine.blankSymbol;
+    let min = Infinity;
+    let max = -Infinity;
+    for (const [idx, sym] of this.tape.cells.entries()) {
+      if (sym !== blank && sym !== "" && sym !== undefined) {
+        if (idx < min) min = idx;
+        if (idx > max) max = idx;
+      }
+    }
+    if (min === Infinity) return "ε (empty tape)";
+    let out = "";
+    for (let i = min; i <= max; i++) {
+      out += this.tape.read(i);
+    }
+    return out;
+  }
+
+  /**
    * Capture a full state snapshot for UI binding
    */
   getStateSnapshot() {
+    const nextTrans = this.getNextTransitionPreview();
     return {
       machineName: this.machine ? this.machine.name : "None",
       statesCount: this.machine ? this.machine.states.length : 0,
       transitionsCount: this.machine ? this.machine.transitions.length : 0,
-      inputLength: this.inputString.length,
+      inputLength: this.inputString ? this.inputString.length : 0,
       currentStep: this.stepCount,
       currentState: this.currentState,
       headPosition: this.headPosition,
@@ -715,7 +808,12 @@ class UTMSimulator {
       visibleTape: this.tape.getVisibleWindow(this.headPosition, 7),
       lastTransition: this.lastTransition,
       lastExplanation: this.lastExplanation,
-      historyCount: this.history.length
+      historyCount: this.history.length,
+      nextTransition: nextTrans,
+      canStepBackward: this.snapshots && this.snapshots.length > 0,
+      canStepForward: !["ACCEPTED", "REJECTED", "HALTED", "STEP_LIMIT", "ERROR"].includes(this.status),
+      tapeOutput: this.getTapeOutputString(),
+      maxSteps: this.maxSteps
     };
   }
 }
@@ -736,6 +834,7 @@ class UIManager {
     this.initDOMElements();
     this.bindEvents();
     this.initTheme();
+    this.populatePresetDropdown();
     this.loadPreset("contains1");
   }
 
@@ -745,11 +844,34 @@ class UIManager {
   initDOMElements() {
     // Header & presets
     this.presetSelect = document.getElementById("presetSelect");
+    this.presetCategoryFilter = document.getElementById("presetCategoryFilter");
+    this.presetSearch = document.getElementById("presetSearch");
     this.themeToggleBtn = document.getElementById("themeToggleBtn");
     this.theoryModalBtn = document.getElementById("theoryModalBtn");
+    this.theoryHeaderBtn = document.getElementById("theoryHeaderBtn");
     this.theoryModal = document.getElementById("theoryModal");
     this.closeTheoryBtn = document.getElementById("closeTheoryBtn");
     this.modalOkBtn = document.getElementById("modalOkBtn");
+    this.keyboardHelpBtn = document.getElementById("keyboardHelpBtn");
+    this.keyboardHelpModal = document.getElementById("keyboardHelpModal");
+    this.closeKeyboardHelpBtn = document.getElementById("closeKeyboardHelpBtn");
+
+    // Machine Overview & Objectives Card
+    this.machineOverviewCard = document.getElementById("machineOverviewCard");
+    this.overviewTitle = document.getElementById("overviewTitle");
+    this.overviewCategoryBadge = document.getElementById("overviewCategoryBadge");
+    this.overviewDifficultyBadge = document.getElementById("overviewDifficultyBadge");
+    this.overviewLanguage = document.getElementById("overviewLanguage");
+    this.overviewDescription = document.getElementById("overviewDescription");
+    this.toggleOverviewBtn = document.getElementById("toggleOverviewBtn");
+    this.overviewBody = document.getElementById("overviewBody");
+    this.chipQ = document.getElementById("chipQ");
+    this.chipSigma = document.getElementById("chipSigma");
+    this.chipGamma = document.getElementById("chipGamma");
+    this.chipB = document.getElementById("chipB");
+    this.chipQ0 = document.getElementById("chipQ0");
+    this.chipQacc = document.getElementById("chipQacc");
+    this.chipQrej = document.getElementById("chipQrej");
 
     // Dashboard metrics
     this.dashMachineName = document.getElementById("dashMachineName");
@@ -766,6 +888,27 @@ class UIManager {
     this.heroHeadPos = document.getElementById("heroHeadPos");
     this.heroCurrentStep = document.getElementById("heroCurrentStep");
     this.headStateTag = document.getElementById("headStateTag");
+    this.maxStepHero = document.getElementById("maxStepHero");
+
+    // Stepping, Lookahead & Progress Counters
+    this.stepBackBtn = document.getElementById("stepBackBtn");
+    this.nextRuleDisplay = document.getElementById("nextRuleDisplay");
+    this.stepCounterDisplay = document.getElementById("stepCounterDisplay");
+    this.maxStepDisplay = document.getElementById("maxStepDisplay");
+
+    // Execution Summary Card
+    this.executionSummaryCard = document.getElementById("executionSummaryCard");
+    this.summaryStatusBanner = document.getElementById("summaryStatusBanner");
+    this.summaryIcon = document.getElementById("summaryIcon");
+    this.summaryTitle = document.getElementById("summaryTitle");
+    this.summaryTotalSteps = document.getElementById("summaryTotalSteps");
+    this.summaryFinalState = document.getElementById("summaryFinalState");
+    this.summaryFinalHeadPos = document.getElementById("summaryFinalHeadPos");
+    this.summaryTapeOutput = document.getElementById("summaryTapeOutput");
+    this.summaryExplanation = document.getElementById("summaryExplanation");
+    this.summaryResetBtn = document.getElementById("summaryResetBtn");
+    this.summaryCloseBtn = document.getElementById("summaryCloseBtn");
+    this.summaryDismissBtn = document.getElementById("summaryDismissBtn");
 
     // TM Form Inputs
     this.machineNameInput = document.getElementById("machineNameInput");
@@ -867,13 +1010,23 @@ class UIManager {
    */
   bindEvents() {
     // Preset change or custom machine editor
-    this.presetSelect.addEventListener("change", (e) => {
-      if (e.target.value === "custom") {
-        this.switchToCustomMachineEditor();
-      } else {
-        this.loadPreset(e.target.value);
-      }
-    });
+    if (this.presetSelect) {
+      this.presetSelect.addEventListener("change", (e) => {
+        if (e.target.value === "custom") {
+          this.switchToCustomMachineEditor();
+        } else {
+          this.loadPreset(e.target.value);
+        }
+      });
+    }
+
+    if (this.presetCategoryFilter) {
+      this.presetCategoryFilter.addEventListener("change", () => this.filterPresets());
+    }
+
+    if (this.presetSearch) {
+      this.presetSearch.addEventListener("input", () => this.filterPresets());
+    }
 
     // Theme toggle
     this.themeToggleBtn.addEventListener("click", () => this.toggleTheme());
@@ -1023,11 +1176,49 @@ class UIManager {
 
     // Simulation Controls
     this.startBtn.addEventListener("click", () => this.startSimulation());
+    if (this.stepBackBtn) {
+      this.stepBackBtn.addEventListener("click", () => this.stepBackwardSimulation());
+    }
     this.stepBtn.addEventListener("click", () => this.stepSimulation());
     this.pauseBtn.addEventListener("click", () => this.pauseSimulation());
     this.resumeBtn.addEventListener("click", () => this.resumeSimulation());
     this.resetBtn.addEventListener("click", () => this.resetSimulation());
     this.stopBtn.addEventListener("click", () => this.stopSimulation());
+
+    // Overview Card Toggle
+    if (this.toggleOverviewBtn) {
+      this.toggleOverviewBtn.addEventListener("click", () => this.toggleOverviewCard());
+    }
+
+    // Execution Summary Card Actions
+    if (this.summaryResetBtn) {
+      this.summaryResetBtn.addEventListener("click", () => {
+        this.hideExecutionSummary();
+        this.resetSimulation();
+      });
+    }
+    if (this.summaryCloseBtn) {
+      this.summaryCloseBtn.addEventListener("click", () => this.hideExecutionSummary());
+    }
+    if (this.summaryDismissBtn) {
+      this.summaryDismissBtn.addEventListener("click", () => this.hideExecutionSummary());
+    }
+
+    // Keyboard Shortcuts & Theory Header Modals
+    if (this.keyboardHelpBtn) {
+      this.keyboardHelpBtn.addEventListener("click", () => this.openKeyboardHelp());
+    }
+    if (this.closeKeyboardHelpBtn) {
+      this.closeKeyboardHelpBtn.addEventListener("click", () => this.closeKeyboardHelp());
+    }
+    if (this.keyboardHelpModal) {
+      this.keyboardHelpModal.addEventListener("click", (e) => {
+        if (e.target === this.keyboardHelpModal) this.closeKeyboardHelp();
+      });
+    }
+    if (this.theoryHeaderBtn) {
+      this.theoryHeaderBtn.addEventListener("click", () => this.openTheoryModal());
+    }
 
     // Tape navigation
     this.centerHeadBtn.addEventListener("click", () => this.centerTapeOnHead());
@@ -1047,6 +1238,50 @@ class UIManager {
     // History buttons
     this.clearHistoryBtn.addEventListener("click", () => this.clearHistory());
     this.exportHistoryBtn.addEventListener("click", () => this.exportHistoryCSV());
+
+    // Global Keyboard Shortcuts (Space, Left/Right Arrow, R, Esc, ?, C)
+    window.addEventListener("keydown", (e) => {
+      const activeTag = document.activeElement ? document.activeElement.tagName.toLowerCase() : "";
+      if (["input", "textarea", "select"].includes(activeTag)) return;
+
+      const openModal = document.querySelector(".modal-backdrop:not(.modal-hidden)");
+      if (openModal) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          this.closeAllModals();
+        }
+        return;
+      }
+
+      if (e.code === "Space") {
+        e.preventDefault();
+        if (this.simulator.status === "RUNNING") {
+          this.pauseSimulation();
+        } else if (this.simulator.status === "PAUSED") {
+          this.resumeSimulation();
+        } else {
+          this.startSimulation();
+        }
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        this.stepSimulation();
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        this.stepBackwardSimulation();
+      } else if (e.key === "r" || e.key === "R") {
+        e.preventDefault();
+        this.resetSimulation();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        this.stopSimulation();
+      } else if (e.key === "c" || e.key === "C") {
+        e.preventDefault();
+        this.centerTapeOnHead();
+      } else if (e.key === "?") {
+        e.preventDefault();
+        this.openKeyboardHelp();
+      }
+    });
   }
 
   /* ==================== THEME MANAGEMENT ==================== */
@@ -1100,10 +1335,101 @@ class UIManager {
     }
   }
 
-  /* ==================== PRESET LOADER ==================== */
+  /* ==================== PRESET LOADER & FILTER ==================== */
+  populatePresetDropdown(categoryFilter = 'all', searchTerm = '') {
+    if (!this.presetSelect) return;
+
+    const term = (searchTerm || '').trim().toLowerCase();
+    const currentVal = this.presetSelect.value;
+
+    // Defined computation-type category ordering
+    const categoryGroups = {
+      'strings': { label: 'String & Language Recognizers', items: [] },
+      'integers': { label: 'Arithmetic & Integer Operations', items: [] },
+      'grammars': { label: 'Grammars & Non-Regular Languages', items: [] },
+      'transformations': { label: 'String Transformations', items: [] },
+      'advanced': { label: 'Advanced Machines & Enumerators', items: [] }
+    };
+
+    // Group machines
+    for (const [key, preset] of Object.entries(ACTIVE_PRESETS)) {
+      const catKey = preset.categoryKey || 'strings';
+      if (categoryFilter !== 'all' && catKey !== categoryFilter && preset.category !== categoryFilter) {
+        continue;
+      }
+
+      if (term) {
+        const matchesName = (preset.name || '').toLowerCase().includes(term);
+        const matchesDesc = (preset.description || '').toLowerCase().includes(term);
+        const matchesLang = (preset.language || '').toLowerCase().includes(term);
+        const matchesCat = (preset.category || '').toLowerCase().includes(term);
+        const matchesId = key.toLowerCase().includes(term);
+        if (!matchesName && !matchesDesc && !matchesLang && !matchesCat && !matchesId) {
+          continue;
+        }
+      }
+
+      if (!categoryGroups[catKey]) {
+        categoryGroups[catKey] = { label: preset.category || catKey, items: [] };
+      }
+      categoryGroups[catKey].items.push({ key, preset });
+    }
+
+    this.presetSelect.innerHTML = '';
+    let totalItems = 0;
+    let foundCurrent = false;
+
+    for (const [catKey, group] of Object.entries(categoryGroups)) {
+      if (!group.items || group.items.length === 0) continue;
+
+      const optgroup = document.createElement('optgroup');
+      optgroup.label = group.label;
+
+      group.items.forEach(({ key, preset }) => {
+        totalItems++;
+        const opt = document.createElement('option');
+        opt.value = key;
+        opt.textContent = preset.name;
+        if (key === currentVal) foundCurrent = true;
+        optgroup.appendChild(opt);
+      });
+
+      this.presetSelect.appendChild(optgroup);
+    }
+
+    // Always append Custom option at bottom
+    const customOpt = document.createElement('option');
+    customOpt.value = 'custom';
+    customOpt.textContent = '✏️ Enter Custom Machine Manually...';
+    this.presetSelect.appendChild(customOpt);
+
+    if (foundCurrent) {
+      this.presetSelect.value = currentVal;
+    } else if (totalItems > 0) {
+      const firstOpt = this.presetSelect.querySelector('option:not([value="custom"])');
+      if (firstOpt) {
+        this.presetSelect.value = firstOpt.value;
+      }
+    }
+  }
+
+  filterPresets() {
+    const cat = this.presetCategoryFilter ? this.presetCategoryFilter.value : 'all';
+    const search = this.presetSearch ? this.presetSearch.value : '';
+    const prevVal = this.presetSelect ? this.presetSelect.value : '';
+    this.populatePresetDropdown(cat, search);
+    if (this.presetSelect && this.presetSelect.value !== prevVal && this.presetSelect.value !== 'custom') {
+      this.loadPreset(this.presetSelect.value);
+    }
+  }
+
   loadPreset(presetKey) {
-    const preset = PRESET_MACHINES[presetKey];
+    const preset = ACTIVE_PRESETS[presetKey];
     if (!preset) return;
+
+    if (this.presetSelect && this.presetSelect.value !== presetKey) {
+      this.presetSelect.value = presetKey;
+    }
 
     this.stopSimulation();
 
@@ -1116,6 +1442,31 @@ class UIManager {
     this.acceptStateInput.value = preset.acceptState;
     this.rejectStateInput.value = preset.rejectState;
     this.inputString.value = preset.defaultInput || "";
+
+    // Update Machine Specification Card (Title, Category, Language, 7-Tuple Chips, Description)
+    if (this.overviewTitle) this.overviewTitle.textContent = preset.name;
+    if (this.overviewCategoryBadge) {
+      this.overviewCategoryBadge.textContent = preset.category || "String & Language Recognizers";
+    }
+    if (this.overviewDifficultyBadge) {
+      this.overviewDifficultyBadge.textContent = "";
+      this.overviewDifficultyBadge.style.display = "none";
+    }
+    if (this.overviewLanguage) {
+      this.overviewLanguage.textContent = preset.language || "L = { ... }";
+    }
+    if (this.overviewDescription) {
+      this.overviewDescription.textContent = preset.description || "Formal Turing Machine definition.";
+    }
+    if (this.chipQ) this.chipQ.textContent = preset.states.join(", ");
+    if (this.chipSigma) this.chipSigma.textContent = preset.inputAlphabet.join(", ");
+    if (this.chipGamma) this.chipGamma.textContent = preset.tapeAlphabet.join(", ");
+    if (this.chipB) this.chipB.textContent = preset.blankSymbol;
+    if (this.chipQ0) this.chipQ0.textContent = preset.startState;
+    if (this.chipQacc) this.chipQacc.textContent = preset.acceptState;
+    if (this.chipQrej) this.chipQrej.textContent = preset.rejectState;
+
+    this.hideExecutionSummary();
 
     // Populate transition table
     this.transitionTableBody.innerHTML = "";
@@ -1321,6 +1672,7 @@ class UIManager {
   /* ==================== SIMULATION EXECUTION ==================== */
   resetSimulation() {
     this.pauseSimulation();
+    this.hideExecutionSummary();
     this.updateMachineFromForm();
     const val = this.validateAndRenderTM();
     if (!val.isValid) return;
@@ -1331,6 +1683,7 @@ class UIManager {
     // Reset controls state
     this.startBtn.disabled = false;
     this.stepBtn.disabled = false;
+    if (this.stepBackBtn) this.stepBackBtn.disabled = true;
     this.pauseBtn.disabled = true;
     this.resumeBtn.disabled = true;
     this.stopBtn.disabled = true;
@@ -1358,6 +1711,7 @@ class UIManager {
     this.simulator.status = "RUNNING";
     this.startBtn.disabled = true;
     this.stepBtn.disabled = true;
+    if (this.stepBackBtn) this.stepBackBtn.disabled = true;
     this.pauseBtn.disabled = false;
     this.resumeBtn.disabled = true;
     this.stopBtn.disabled = false;
@@ -1415,6 +1769,46 @@ class UIManager {
     }
   }
 
+  stepBackwardSimulation() {
+    if (this.simulator.status === "RUNNING") {
+      this.pauseSimulation();
+    }
+    const res = this.simulator.stepBackward();
+    if (!res) {
+      this.showToast("Cannot step backward: already at initial configuration (Step 0).", "warning");
+      return;
+    }
+
+    this.hideExecutionSummary();
+
+    // Re-enable controls if stepped back from a halted condition
+    this.startBtn.disabled = false;
+    this.stepBtn.disabled = false;
+    this.pauseBtn.disabled = true;
+    this.resumeBtn.disabled = true;
+    this.stopBtn.disabled = false;
+
+    // Remove top history row
+    const firstRow = this.historyTableBody.querySelector("tr:not(.empty-history-row)");
+    if (firstRow) firstRow.remove();
+    if (this.historyTableBody.querySelectorAll("tr").length === 0) {
+      this.clearHistory();
+    } else {
+      this.historyCountBadge.textContent = `${this.simulator.history.length} Steps`;
+    }
+
+    const snapshot = this.simulator.getStateSnapshot();
+    this.renderState(snapshot);
+
+    if (snapshot.lastTransition) {
+      this.highlightTransitionInTable(snapshot.lastTransition);
+    } else {
+      this.clearTransitionHighlight();
+    }
+
+    this.showToast(`⏪ Stepped back to Step ${snapshot.currentStep}`, "info");
+  }
+
   pauseSimulation() {
     if (this.runTimer) {
       clearInterval(this.runTimer);
@@ -1427,6 +1821,7 @@ class UIManager {
       this.pauseBtn.disabled = true;
       this.resumeBtn.disabled = false;
       this.stepBtn.disabled = false;
+      if (this.stepBackBtn) this.stepBackBtn.disabled = !this.simulator.snapshots || this.simulator.snapshots.length === 0;
       this.renderState(this.simulator.getStateSnapshot());
       this.showToast("Simulation paused.", "info");
     }
@@ -1448,6 +1843,7 @@ class UIManager {
 
     this.startBtn.disabled = false;
     this.stepBtn.disabled = true;
+    if (this.stepBackBtn) this.stepBackBtn.disabled = !this.simulator.snapshots || this.simulator.snapshots.length === 0;
     this.pauseBtn.disabled = true;
     this.resumeBtn.disabled = true;
     this.stopBtn.disabled = true;
@@ -1462,7 +1858,11 @@ class UIManager {
     this.pauseBtn.disabled = true;
     this.resumeBtn.disabled = true;
     this.stopBtn.disabled = true;
+    if (this.stepBackBtn) this.stepBackBtn.disabled = !this.simulator.snapshots || this.simulator.snapshots.length === 0;
     this.animateArchFlow(false);
+
+    // Show Execution Summary Card
+    this.showExecutionSummary(finalStatus);
 
     if (finalStatus === "ACCEPTED") {
       this.showToast("🎉 Input ACCEPTED by Turing Machine!", "success");
@@ -1473,6 +1873,76 @@ class UIManager {
     } else {
       this.showToast(`Simulation ended with status: ${finalStatus}`, "info");
     }
+  }
+
+  showExecutionSummary(status) {
+    if (!this.executionSummaryCard) return;
+    const snapshot = this.simulator.getStateSnapshot();
+
+    if (this.summaryTotalSteps) this.summaryTotalSteps.textContent = snapshot.currentStep;
+    if (this.summaryFinalState) this.summaryFinalState.textContent = snapshot.currentState;
+    if (this.summaryFinalHeadPos) this.summaryFinalHeadPos.textContent = snapshot.headPosition;
+    if (this.summaryTapeOutput) this.summaryTapeOutput.textContent = snapshot.tapeOutput || "ε";
+
+    if (status === "ACCEPTED") {
+      if (this.summaryStatusBanner) this.summaryStatusBanner.className = "summary-status-banner banner-accepted";
+      if (this.summaryIcon) this.summaryIcon.textContent = "🎉";
+      if (this.summaryTitle) this.summaryTitle.textContent = "Input String ACCEPTED";
+      if (this.summaryExplanation) {
+        this.summaryExplanation.textContent = `The Turing Machine successfully processed the input and reached the formal accept state "${snapshot.currentState}". Output tape produced: "${snapshot.tapeOutput}".`;
+      }
+    } else if (status === "REJECTED") {
+      if (this.summaryStatusBanner) this.summaryStatusBanner.className = "summary-status-banner banner-rejected";
+      if (this.summaryIcon) this.summaryIcon.textContent = "🛑";
+      if (this.summaryTitle) this.summaryTitle.textContent = "Input String REJECTED";
+      if (this.summaryExplanation) {
+        this.summaryExplanation.textContent = `The Turing Machine halted in reject state "${snapshot.currentState}" (or encountered an undefined transition with no valid rule).`;
+      }
+    } else if (status === "STEP_LIMIT") {
+      if (this.summaryStatusBanner) this.summaryStatusBanner.className = "summary-status-banner banner-warning";
+      if (this.summaryIcon) this.summaryIcon.textContent = "⚠️";
+      if (this.summaryTitle) this.summaryTitle.textContent = "Step Limit Reached (Halting Problem)";
+      if (this.summaryExplanation) {
+        this.summaryExplanation.textContent = `The execution reached the maximum allowed limit of ${snapshot.maxSteps} steps. The machine may be non-halting on this input.`;
+      }
+    } else {
+      if (this.summaryStatusBanner) this.summaryStatusBanner.className = "summary-status-banner banner-halted";
+      if (this.summaryIcon) this.summaryIcon.textContent = "⏹";
+      if (this.summaryTitle) this.summaryTitle.textContent = `Simulation Halted (${status})`;
+      if (this.summaryExplanation) {
+        this.summaryExplanation.textContent = `The machine execution finished with status "${status}". Final tape contents: "${snapshot.tapeOutput}".`;
+      }
+    }
+
+    this.executionSummaryCard.classList.remove("hidden");
+  }
+
+  hideExecutionSummary() {
+    if (this.executionSummaryCard) {
+      this.executionSummaryCard.classList.add("hidden");
+    }
+  }
+
+  toggleOverviewCard() {
+    if (!this.overviewBody || !this.toggleOverviewBtn) return;
+    const isCollapsed = this.overviewBody.classList.toggle("collapsed");
+    this.toggleOverviewBtn.textContent = isCollapsed ? "ℹ 7-Tuple Details ▼" : "ℹ Hide 7-Tuple ▲";
+    this.toggleOverviewBtn.setAttribute("aria-expanded", !isCollapsed);
+  }
+
+  openKeyboardHelp() {
+    if (this.keyboardHelpModal) this.keyboardHelpModal.classList.remove("modal-hidden");
+  }
+
+  closeKeyboardHelp() {
+    if (this.keyboardHelpModal) this.keyboardHelpModal.classList.add("modal-hidden");
+  }
+
+  closeAllModals() {
+    if (this.keyboardHelpModal) this.keyboardHelpModal.classList.add("modal-hidden");
+    if (this.manualTapeModal) this.manualTapeModal.classList.add("modal-hidden");
+    if (this.cellEditModal) this.cellEditModal.classList.add("modal-hidden");
+    if (this.theoryModal) this.theoryModal.classList.add("modal-hidden");
   }
 
   /* ==================== UI STATE RENDERING ==================== */
@@ -1491,6 +1961,13 @@ class UIManager {
     if (this.heroHeadPos) this.heroHeadPos.textContent = snapshot.headPosition;
     if (this.heroCurrentStep) this.heroCurrentStep.textContent = snapshot.currentStep;
     if (this.headStateTag) this.headStateTag.textContent = snapshot.currentState;
+    if (this.maxStepHero) this.maxStepHero.textContent = snapshot.maxSteps;
+
+    // Control and progress states
+    if (this.stepBackBtn) this.stepBackBtn.disabled = !snapshot.canStepBackward;
+    if (this.stepBtn) this.stepBtn.disabled = !snapshot.canStepForward || this.simulator.status === "RUNNING";
+    if (this.stepCounterDisplay) this.stepCounterDisplay.textContent = snapshot.currentStep;
+    if (this.maxStepDisplay) this.maxStepDisplay.textContent = snapshot.maxSteps;
 
     // Status Badge / Pill
     if (this.dashStatus) {
@@ -1513,7 +1990,19 @@ class UIManager {
     if (this.archHeadPos) this.archHeadPos.textContent = snapshot.headPosition;
     if (this.archTapePreview) this.archTapePreview.textContent = this.simulator.tape.toPreviewString(snapshot.headPosition);
 
-    // 5. Active transition details
+    // 5. Lookahead / Next Rule Preview
+    if (this.nextRuleDisplay) {
+      if (snapshot.nextTransition) {
+        const nt = snapshot.nextTransition;
+        this.nextRuleDisplay.innerHTML = `&delta;(${nt.currentState}, '${nt.readSymbol}') &rarr; (${nt.nextState}, '${nt.writeSymbol}', ${nt.moveDirection})`;
+      } else if (["ACCEPTED", "REJECTED", "STEP_LIMIT", "HALTED"].includes(snapshot.status)) {
+        this.nextRuleDisplay.innerHTML = `<span class="text-muted">Halted (${snapshot.status})</span>`;
+      } else {
+        this.nextRuleDisplay.innerHTML = `<span class="text-warning">No rule defined (Implicit Halt)</span>`;
+      }
+    }
+
+    // 6. Active transition details
     if (snapshot.lastTransition) {
       const t = snapshot.lastTransition;
       if (this.activeTransBadge) {
@@ -1542,7 +2031,7 @@ class UIManager {
 
   renderTape(cellsWindow, headPos, currentState) {
     this.tapeTrack.innerHTML = "";
-    this.headStateBadge.textContent = currentState;
+    if (this.headStateBadge) this.headStateBadge.textContent = currentState;
 
     let activeCellElement = null;
 
@@ -1550,21 +2039,32 @@ class UIManager {
       const cellEl = document.createElement("div");
       cellEl.className = `tape-cell ${cell.isBlank ? "blank-cell" : ""} ${cell.isHead ? "active-cell" : ""}`;
       cellEl.title = `Click to edit cell #${cell.index} manually`;
+      
+      let headIndicatorHtml = "";
+      if (cell.isHead) {
+        headIndicatorHtml = `
+          <div class="active-head-indicator font-mono" title="Turing Machine Head">
+            <span class="head-arrow">▼</span>
+            <span class="head-state-badge">HEAD: ${currentState}</span>
+          </div>
+        `;
+        activeCellElement = cellEl;
+      }
+
       cellEl.innerHTML = `
+        ${headIndicatorHtml}
         <span class="tape-cell-index">${cell.index}</span>
         <span class="tape-cell-symbol">${cell.symbol}</span>
       `;
+
       // Allow user to click any cell to edit its symbol manually
       cellEl.addEventListener("click", () => {
         this.openCellEditModal(cell.index, cell.symbol);
       });
-      if (cell.isHead) {
-        activeCellElement = cellEl;
-      }
       this.tapeTrack.appendChild(cellEl);
     });
 
-    // Auto-scroll tape to keep active head in center view
+    // Auto-scroll tape smoothly to keep active head in center view
     if (activeCellElement) {
       activeCellElement.scrollIntoView({
         behavior: "smooth",
@@ -1931,7 +2431,8 @@ if (typeof document !== "undefined") {
 // Export for module/testing environments if available
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
-    PRESET_MACHINES,
+    PRESET_MACHINES: ACTIVE_PRESETS,
+    ACTIVE_PRESETS,
     TuringMachine,
     UTMEncoder,
     InfiniteTape,
